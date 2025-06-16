@@ -1,3 +1,6 @@
+# Update version script
+update-version.sh
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
