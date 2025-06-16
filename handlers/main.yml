@@ -1,0 +1,9 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: restart prometheus-discovery
+  ansible.builtin.systemd:
+    name: "{{ service_name }}"
+    state: restarted
