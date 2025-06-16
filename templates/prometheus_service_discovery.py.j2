@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+
+import os
+import json
+import time
+import threading
+import logging
+from datetime import datetime
+from flask import Flask, jsonify
+import requests
+from requests.auth import HTTPBasicAuth
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+targets_data = []
+last_update = None
+lock = threading.Lock()
+
+def get_fleet_instances(base_url, api_key, api_secret):
+    try:
+        auth = HTTPBasicAuth(api_key, api_secret)
+        response = requests.get(f"{base_url}/api/public/tenants/main/instances", auth=auth)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch instances: {e}")
+        return []
+
+def get_instance_status(base_url, api_key, api_secret, instance_id):
+    try:
+        auth = HTTPBasicAuth(api_key, api_secret)
+        response = requests.get(f"{base_url}/api/public/tenants/main/instances/{instance_id}/status", auth=auth)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch status for instance {instance_id}: {e}")
+        return None
+
+def create_prometheus_target(instance, status):
+    try:
+        instance_id = instance.get('id')
+        
+        target_url = None
+        if status:
+            if status.get('publicURL'):
+                target_url = status['publicURL'].replace('https://', '').replace('http://', '')
+            elif status.get('privateURL'):
+                target_url = status['privateURL'].replace('https://', '').replace('http://', '')
+            elif status.get('publicIP'):
+                target_url = f"{status['publicIP']}:443"
+            elif status.get('privateIP'):
+                target_url = f"{status['privateIP']}:443"
+        
+        if not target_url:
+            target_url = f"unknown-{instance_id}:443"
+
+        labels = {
+            'instance_id': instance_id,
+            'label': instance.get('label', ''),
+            'dss_node_type': instance.get('dssNodeType', ''),
+            'cloud_instance_type': instance.get('cloudInstanceType', ''),
+            'aws_region': instance.get('awsRegion', ''),
+            'image_id': instance.get('imageId', ''),
+            'image_label': instance.get('imageLabel', ''),
+            'virtual_network_id': instance.get('virtualNetworkId', ''),
+            'data_volume_size_gb': str(instance.get('dataVolumeSizeGB', '')),
+            'root_volume_size_gb': str(instance.get('rootVolumeSizeGB', '')),
+            'encrypt_data_volume': str(instance.get('encryptDataVolume', '')).lower(),
+            'encrypt_root_volume': str(instance.get('encryptRootVolume', '')).lower(),
+        }
+        
+        if status:
+            labels.update({
+                'stage': status.get('stage', ''),
+                'cloud_machine_exists': str(status.get('cloudMachineExists', '')).lower(),
+                'cloud_machine_is_up': str(status.get('cloudMachineIsUp', '')).lower(),
+                'aws_instance_id': status.get('awsInstanceId', ''),
+                'private_ip': status.get('privateIP', ''),
+                'public_ip': status.get('publicIP', ''),
+            })
+            
+            if status.get('lastHeartbeatState'):
+                heartbeat = status['lastHeartbeatState']
+                labels.update({
+                    'heartbeat_state': heartbeat.get('state', ''),
+                    'disk_usage_percent': str(round((heartbeat.get('bytesUsed', 0) / max(heartbeat.get('bytesTotal', 1), 1)) * 100, 2)),
+                    'os_disk_usage_percent': str(round((heartbeat.get('osBytesUsed', 0) / max(heartbeat.get('osBytesTotal', 1), 1)) * 100, 2)),
+                })
+
+        fm_tags = instance.get('fmTags', [])
+        if fm_tags:
+            labels['fm_tags'] = ','.join(fm_tags)
+
+        inherited_tags = instance.get('inheritedCloudTags', [])
+        for tag in inherited_tags:
+            key = tag.get('key', '').lower().replace('-', '_')
+            value = tag.get('value', '')
+            if key:
+                labels[f'inherited_tag_{key}'] = value
+
+        labels = {k: v for k, v in labels.items() if v != ''}
+
+        return {
+            'targets': [target_url],
+            'labels': labels
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating target for instance {instance.get('id', 'unknown')}: {e}")
+        return None
+
+def refresh_targets(base_url, api_key, api_secret):
+    global targets_data, last_update
+    
+    logger.info("Refreshing target data from Fleet Manager API")
+    instances = get_fleet_instances(base_url, api_key, api_secret)
+    
+    targets = []
+    for instance in instances:
+        instance_id = instance.get('id')
+        if not instance_id:
+            continue
+            
+        status = get_instance_status(base_url, api_key, api_secret, instance_id)
+        target = create_prometheus_target(instance, status)
+        if target:
+            targets.append(target)
+    
+    with lock:
+        targets_data = targets
+        last_update = datetime.now()
+    
+    logger.info(f"Refreshed {len(targets)} targets")
+
+def background_refresh_loop(base_url, api_key, api_secret, refresh_interval):
+    while True:
+        try:
+            refresh_targets(base_url, api_key, api_secret)
+            time.sleep(refresh_interval)
+        except Exception as e:
+            logger.error(f"Error in refresh loop: {e}")
+            time.sleep(5)
+
+def start_background_refresh(base_url, api_key, api_secret, refresh_interval):
+    thread = threading.Thread(
+        target=background_refresh_loop, 
+        args=(base_url, api_key, api_secret, refresh_interval),
+        daemon=True
+    )
+    thread.start()
+    logger.info(f"Started background refresh with {refresh_interval}s interval")
+
+app = Flask(__name__)
+
+@app.route('/prometheus/targets')
+def prometheus_targets():
+    with lock:
+        return jsonify(targets_data.copy())
+
+@app.route('/health')
+def health():
+    with lock:
+        return jsonify({
+            'status': 'healthy',
+            'last_update': last_update.isoformat() if last_update else None,
+            'target_count': len(targets_data)
+        })
+
+@app.route('/debug')
+def debug():
+    with lock:
+        return jsonify({
+            'targets': targets_data.copy(),
+            'metadata': {
+                'last_update': last_update.isoformat() if last_update else None,
+                'target_count': len(targets_data),
+                'refresh_interval_seconds': {{ refresh_interval_seconds }}
+            }
+        })
+
+def main():
+    api_key = os.getenv('FM_API_KEY_NAME')
+    api_secret = os.getenv('FM_API_KEY_SECRET')
+    
+    if not api_key or not api_secret:
+        logger.error("FM_API_KEY_NAME and FM_API_KEY_SECRET environment variables are required")
+        return
+    
+    base_url = '{{ fleet_manager_api_base_url }}'
+    refresh_interval = {{ refresh_interval_seconds }}
+    
+    refresh_targets(base_url, api_key, api_secret)
+    start_background_refresh(base_url, api_key, api_secret, refresh_interval)
+    
+    port = int(os.getenv('PROMETHEUS_SERVICE_DISCOVERY_PORT', {{ prometheus_discovery_port }}))
+    logger.info(f"Starting Prometheus service discovery server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+if __name__ == '__main__':
+    main()

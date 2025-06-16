@@ -1,0 +1,19 @@
+[Unit]
+Description={{ service_description }}
+After=network.target
+
+[Service]
+Type=simple
+User={{ prometheus_discovery_user }}
+WorkingDirectory={{ working_directory }}
+Environment=FM_API_KEY_NAME={{ fm_api_key_name }}
+Environment=FM_API_KEY_SECRET={{ fm_api_key_secret }}
+Environment=PROMETHEUS_SERVICE_DISCOVERY_PORT={{ prometheus_discovery_port }}
+ExecStart={{ python_executable }} {{ script_path }}
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

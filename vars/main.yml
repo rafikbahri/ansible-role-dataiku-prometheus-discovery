@@ -1,0 +1,7 @@
+---
+service_name: prometheus-service-discovery
+service_description: Prometheus Service Discovery for Fleet Manager managed instances
+python_executable: "{{ prometheus_discovery_home }}/bin/python"
+pip_executable: "{{ prometheus_discovery_home }}/bin/pip"
+script_path: "{{ prometheus_discovery_home }}/lib/plugins/prometheus_service_discovery.py"
+working_directory: "{{ prometheus_discovery_home }}/lib/plugins"

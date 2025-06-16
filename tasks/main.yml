@@ -1,0 +1,62 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - fm_api_key_name is defined
+      - fm_api_key_name | length > 0
+      - fm_api_key_secret is defined
+      - fm_api_key_secret | length > 0
+    fail_msg: "fm_api_key_name and fm_api_key_secret are required variables"
+
+- name: Check if Dataiku home directory exists
+  ansible.builtin.stat:
+    path: "{{ prometheus_discovery_home }}"
+  register: dataiku_home_stat
+
+- name: Fail if Dataiku home directory does not exist
+  ansible.builtin.fail:
+    msg: "Dataiku home directory {{ prometheus_discovery_home }} does not exist"
+  when: not dataiku_home_stat.stat.exists
+
+- name: Install required Python packages
+  ansible.builtin.pip:
+    name:
+      - Flask
+      - requests
+    executable: "{{ pip_executable }}"
+  become_user: "{{ prometheus_discovery_user }}"
+
+- name: Create plugins directory
+  ansible.builtin.file:
+    path: "{{ working_directory }}"
+    state: directory
+    owner: "{{ prometheus_discovery_user }}"
+    group: "{{ prometheus_discovery_group }}"
+    mode: '0755'
+
+- name: Copy Prometheus service discovery script
+  ansible.builtin.template:
+    src: prometheus_service_discovery.py.j2
+    dest: "{{ script_path }}"
+    owner: "{{ prometheus_discovery_user }}"
+    group: "{{ prometheus_discovery_group }}"
+    mode: '0755'
+  notify: restart prometheus-discovery
+
+- name: Create systemd service file
+  ansible.builtin.template:
+    src: prometheus-service-discovery.service.j2
+    dest: "/etc/systemd/system/{{ service_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart prometheus-discovery
+
+- name: Enable and start prometheus-discovery service
+  ansible.builtin.systemd:
+    name: "{{ service_name }}"
+    enabled: "{{ prometheus_discovery_service_enabled }}"
+    state: "{{ prometheus_discovery_service_state }}"
+    daemon_reload: yes

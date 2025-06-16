@@ -1,0 +1,18 @@
+---
+# Service configuration
+prometheus_discovery_port: 10100
+prometheus_discovery_user: dataiku
+prometheus_discovery_group: dataiku
+prometheus_discovery_home: /data/dataiku/fmhome
+
+# API configuration
+fleet_manager_api_base_url: http://localhost:10000
+refresh_interval_seconds: 30
+
+# Service management
+prometheus_discovery_service_enabled: true
+prometheus_discovery_service_state: started
+
+# Required variables (must be set by user)
+# fm_api_key_name: ""
+# fm_api_key_secret: ""
