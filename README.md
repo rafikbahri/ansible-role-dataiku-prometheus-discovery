@@ -8,7 +8,7 @@ This role sets up a custom HTTP service that exposes Dataiku Fleet Manager insta
 
 ## Requirements
 
-- Ansible 2.9 or higher
+- Ansible 2.17.5 or higher
 - Existing Dataiku Fleet Manager installation
 - Python 3.x on the target host
 - Valid Fleet Manager API key
